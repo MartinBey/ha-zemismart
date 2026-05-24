@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Zemismart ZM208 Display Switch",
+        "description": "Enter the IP address of your ZM208 switch. The switch must be on the same local network as Home Assistant. Supports ZM208-1 through ZM208-4 (horizontal and vertical).",
+        "data": {
+          "host": "IP Address",
+          "port": "UDP Port (default 3678)"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Zemismart ZM208 Found",
+        "description": "Found a Zemismart ZM208 display switch at {host} (MAC: {mac}). Add it to Home Assistant?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot reach the device. Check the IP address and that the switch is on the same local network as Home Assistant.",
+      "unknown": "Unexpected error. Check the logs for details."
+    },
+    "abort": {
+      "already_configured": "This ZM208 is already configured.",
+      "cannot_connect": "Cannot connect to the device.",
+      "not_zemismart": "Device is not a Zemismart ZM208.",
+      "no_host": "Could not determine device IP address.",
+      "unknown": "Unexpected error during setup."
+    }
+  }
+}
