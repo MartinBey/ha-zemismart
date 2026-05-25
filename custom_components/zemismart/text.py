@@ -14,11 +14,47 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_PORT, DOMAIN, PORT
 from .coordinator import ZM208Coordinator
-from .protocol import ZM208Client
+from .protocol import ZM208Client, ZM208State
 
 _LOGGER = logging.getLogger(__name__)
 
 DISPLAY_MAX_CHARS = 10
+
+
+def _build_device_info(hass: HomeAssistant, entry: ConfigEntry, state: ZM208State) -> DeviceInfo:
+    """Compute DeviceInfo once at setup time.
+
+    Looks up the stored Matter device by ha_device_id and uses its own identifiers
+    so HA merges our entities onto the existing Matter device page.
+    Called from async_setup_entry when the device registry is fully loaded.
+    """
+    ha_device_id = entry.data.get("ha_device_id")
+    _LOGGER.debug("Building device_info: ha_device_id=%s", ha_device_id)
+
+    if ha_device_id:
+        dev_reg = dr.async_get(hass)
+        device = dev_reg.async_get(ha_device_id)
+        _LOGGER.debug("Device lookup result: %s (identifiers=%s)",
+                      device.name if device else None,
+                      device.identifiers if device else None)
+        if device and device.identifiers:
+            idents = set(map(tuple, device.identifiers))
+            _LOGGER.debug("Using Matter device identifiers: %s", idents)
+            return DeviceInfo(identifiers=idents)
+
+    # Fallback: create standalone device (Matter device not found)
+    _LOGGER.warning(
+        "Could not find Matter device (ha_device_id=%s) — creating standalone device. "
+        "Label entities will appear on a separate 'Zemismart %s' device.",
+        ha_device_id, state.model_name,
+    )
+    return DeviceInfo(
+        connections={("mac", state.mac)},
+        name=f"Zemismart {state.model_name}",
+        manufacturer="Zemismart",
+        model=state.model_name,
+        sw_version=state.firmware,
+    )
 
 
 async def async_setup_entry(
@@ -28,19 +64,20 @@ async def async_setup_entry(
 ) -> None:
     coordinator: ZM208Coordinator = hass.data[DOMAIN][entry.entry_id]
     state = coordinator.data
+
+    # Build DeviceInfo once here — device registry is fully loaded at this point
+    device_info = _build_device_info(hass, entry, state)
+    _LOGGER.debug("device_info for %s: %s", entry.title, device_info)
+
     entities = [
-        ZM208LabelEntity(coordinator, entry, endpoint)
+        ZM208LabelEntity(coordinator, entry, endpoint, device_info)
         for endpoint in state.endpoints
     ]
     async_add_entities(entities)
 
 
 class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
-    """A writable text entity for one button's display label.
-
-    Attaches to the existing Matter device by using its own identifiers,
-    so the label fields appear on the same HA device card as the switches.
-    """
+    """A writable text entity for one button's display label."""
 
     _attr_mode = TextMode.TEXT
     _attr_native_max = DISPLAY_MAX_CHARS
@@ -52,38 +89,16 @@ class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
         coordinator: ZM208Coordinator,
         entry: ConfigEntry,
         endpoint: int,
+        device_info: DeviceInfo,
     ) -> None:
         super().__init__(coordinator)
         self._endpoint = endpoint
         self._entry = entry
         self._attr_unique_id = f"{coordinator.data.mac}_label_{endpoint}"
         self._attr_name = f"Button {endpoint} label"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info that attaches these entities to the Matter device.
-
-        We look up the stored ha_device_id (the HA device registry UUID of the
-        existing Matter device) and return its own identifiers. HA uses the
-        identifiers to find the existing device and adds our entities to it,
-        so the label fields appear on the same device card as the Matter switches.
-        """
-        ha_device_id = self._entry.data.get("ha_device_id")
-        if ha_device_id:
-            dev_reg = dr.async_get(self.hass)
-            device = dev_reg.async_get(ha_device_id)
-            if device and device.identifiers:
-                return DeviceInfo(identifiers=set(map(tuple, device.identifiers)))
-
-        # Fallback: standalone device (used when Matter device not found)
-        state = self.coordinator.data
-        return DeviceInfo(
-            connections={("mac", state.mac)},
-            name=f"Zemismart {state.model_name}",
-            manufacturer="Zemismart",
-            model=state.model_name,
-            sw_version=state.firmware,
-        )
+        # Set once at construction — avoids repeated lookups and ensures
+        # the device registry is fully loaded when DeviceInfo is computed
+        self._attr_device_info = device_info
 
     @property
     def native_value(self) -> str | None:

@@ -44,11 +44,13 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _discover_after_start)
 
     @callback
-    def _on_device_registry_updated(event: dr.EventDeviceRegistryUpdatedData) -> None:
-        if event["action"] != "create":
+    def _on_device_registry_updated(event) -> None:
+        # HA 2026+: event is an Event object; use event.data to access payload
+        data = event.data if hasattr(event, "data") else event
+        if data.get("action") != "create":
             return
         dev_reg = dr.async_get(hass)
-        device = dev_reg.async_get(event["device_id"])
+        device = dev_reg.async_get(data.get("device_id"))
         if device and device.manufacturer == _ZEMISMART_MANUFACTURER:
             info = _device_to_info(hass, device)
             if info:
