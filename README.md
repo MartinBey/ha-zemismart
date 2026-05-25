@@ -1,6 +1,8 @@
 # Zemismart Smart Screen Switch 208
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![HACS Default Submission](https://img.shields.io/badge/HACS%20Default-Pending%20Review-yellow.svg)](https://github.com/hacs/default/pull/7972)
+[![Version](https://img.shields.io/github/v/release/MartinBey/ha-zemismart)](https://github.com/MartinBey/ha-zemismart/releases)
 
 Control the display labels on Zemismart ZM208 WiFi smart switches directly from Home Assistant — no cloud, no app required.
 
