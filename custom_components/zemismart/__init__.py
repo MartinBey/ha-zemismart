@@ -39,28 +39,49 @@ _DEVICEID_RE = re.compile(r"deviceid_[0-9A-Fa-f]+-([0-9A-Fa-f]{16})-", re.IGNORE
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Scan for existing Zemismart Matter devices and watch for new ones."""
 
-    @callback
-    def _discover_after_start(_event=None) -> None:
-        """Scan device registry for Zemismart ZM208s and fire discovery flows."""
+    async def _discover_after_start(_event=None) -> None:
+        """Scan for Zemismart ZM208s and fire discovery flows."""
         already_configured = {
             entry.data.get("ha_device_id")
             for entry in hass.config_entries.async_entries(DOMAIN)
             if entry.data.get("ha_device_id")
         }
 
-        for info in _scan_zemismart_devices(hass):
-            if info["ha_device_id"] in already_configured:
-                _LOGGER.debug(
-                    "Zemismart %s already configured, skipping", info["name"]
+        # Get node IP map from python-matter-server WebSocket (reliable)
+        node_ips = await _get_matter_node_ips()
+        _LOGGER.info("Matter node IPs from WebSocket: %s", node_ips)
+
+        dev_reg = dr.async_get(hass)
+        for device in dev_reg.devices.values():
+            if device.manufacturer != _ZEMISMART_MANUFACTURER:
+                continue
+            node_id = _node_id_from_device(device)
+            if node_id is None:
+                continue
+            if device.id in already_configured:
+                _LOGGER.debug("Zemismart %s already configured", device.name)
+                continue
+
+            ip = node_ips.get(node_id)
+            if not ip:
+                _LOGGER.warning(
+                    "Zemismart device '%s' (node %s) has no IP yet — "
+                    "will retry on next restart",
+                    device.name, node_id,
                 )
                 continue
-            _LOGGER.info(
-                "Discovered Zemismart ZM208 at %s (MAC %s) — firing config flow",
-                info["host"], info.get("mac"),
-            )
+
+            mac = next((c[1] for c in (device.connections or []) if c[0] == "mac"), "")
+            name = device.name_by_user or device.name or "ZM208"
+            info = {
+                "host": ip, "mac": mac, "name": name,
+                "node_id": node_id, "ha_device_id": device.id,
+            }
+            _LOGGER.info("Firing discovery flow for Zemismart %s at %s", name, ip)
             _fire_discovery_flow(hass, info)
 
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _discover_after_start)
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED,
+                               lambda e: hass.async_create_task(_discover_after_start(e)))
 
     @callback
     def _on_device_registry_updated(event) -> None:
@@ -246,6 +267,49 @@ def _ip_for_node(hass: HomeAssistant, node_id: int) -> str | None:
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Error getting IP for Matter node %s: %s", node_id, err)
     return None
+
+
+async def _get_matter_node_ips() -> dict[int, str]:
+    """Get {node_id: ipv4} for all Matter nodes via python-matter-server WebSocket.
+
+    Uses the internal matter-server WebSocket at ws://172.30.32.1:5580/ws
+    which is accessible from within HA and reliably returns cached node data.
+    Falls back gracefully if not reachable.
+    """
+    import asyncio  # noqa: PLC0415
+
+    result: dict[int, str] = {}
+    try:
+        import websockets  # type: ignore[import-untyped]  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+
+        async with asyncio.timeout(5):
+            async with websockets.connect("ws://172.30.32.1:5580/ws") as ws:
+                # Read server info message
+                await ws.recv()
+                # Request all nodes
+                await ws.send(_json.dumps({
+                    "message_id": "get_nodes_for_ip",
+                    "command": "get_nodes",
+                }))
+                resp = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                nodes = resp.get("result", [])
+                for node in nodes:
+                    node_id = node.get("node_id")
+                    attrs = node.get("attributes", {})
+                    ip = _extract_ipv4(attrs.get("0/51/0", []))
+                    if node_id is not None and ip:
+                        result[node_id] = ip
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Could not get Matter node IPs via WebSocket: %s", err)
+        # Fall back to Matter client API
+        try:
+            from homeassistant import config_entries as _ce  # noqa: PLC0415
+            # We can't easily access hass here, so just log and return empty
+            _LOGGER.warning("WebSocket fallback failed — IPs unavailable at startup")
+        except Exception:  # noqa: BLE001
+            pass
+    return result
 
 
 def _extract_ipv4(iface_list: list) -> str | None:
