@@ -1,7 +1,7 @@
 {
   "domain": "zemismart",
-  "name": "Zemismart ZM208 Display Switch",
-  "version": "0.2.9",
+  "name": "Zemismart Smart Screen Switch 208",
+  "version": "0.3.0",
   "documentation": "https://github.com/martinbeyerlab/ha-zemismart",
   "issue_tracker": "https://github.com/martinbeyerlab/ha-zemismart/issues",
   "codeowners": [
