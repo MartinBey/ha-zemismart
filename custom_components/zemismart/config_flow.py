@@ -2,12 +2,14 @@
 
 Three entry paths:
 1. INTEGRATION_DISCOVERY — automatic, triggered when a Zemismart Matter device
-   is found. Shows a simple confirm dialog. No user input required.
+   is found. Auto-creates entry immediately (device already trusted via Matter).
 2. ZEROCONF — triggered by mDNS _matterc._udp.local. advertisement with VP=5020+.
 3. USER — manual fallback: enter IP address.
 
-In all paths, we store the HA device registry UUID of the existing Matter device
-so DeviceInfo can attach our entities to that device (not create a new one).
+We store ha_device_id (HA device registry UUID of the Matter device) so
+text.py can set entity.device_entry directly for correct device association.
+ha_device_id is looked up by node_id when available (reliable for multi-switch),
+falling back to manufacturer match only when node_id is unknown.
 """
 from __future__ import annotations
 
@@ -59,6 +61,51 @@ def _find_matter_ha_device_id(hass, node_id: int | None = None) -> str | None:
                 return device.id
 
     return None
+
+
+async def _find_ha_device_id_for_ip(hass, host: str) -> str | None:
+    """Find the HA device registry UUID for the ZM208 switch at a given IP.
+
+    Strategy:
+    1. Query python-matter-server for {node_id: ip} mapping
+    2. Invert to get node_id for our IP
+    3. Find the HA device whose Matter identifier encodes that node_id
+    4. Fall back to manufacturer match only if node_id lookup fails
+    """
+    import asyncio  # noqa: PLC0415
+    import base64  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415
+    import socket  # noqa: PLC0415
+
+    node_id: int | None = None
+
+    try:
+        import websockets  # type: ignore[import-untyped]  # noqa: PLC0415
+        async with asyncio.timeout(5):
+            async with websockets.connect("ws://172.30.32.1:5580/ws") as ws:
+                await ws.recv()  # server info
+                await ws.send(_json.dumps({"message_id": "get_nodes", "command": "get_nodes"}))
+                resp = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                for node in resp.get("result", []):
+                    nid = node.get("node_id")
+                    attrs = node.get("attributes", {})
+                    for iface in attrs.get("0/51/0", []):
+                        for b64 in iface.get("5", []):
+                            try:
+                                ip = socket.inet_ntoa(base64.b64decode(b64))
+                                if ip == host:
+                                    node_id = nid
+                                    break
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if node_id is not None:
+                            break
+                    if node_id is not None:
+                        break
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Matter WebSocket lookup failed for %s: %s", host, err)
+
+    return _find_matter_ha_device_id(hass, node_id=node_id)
 
 
 class ZemismartConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -149,7 +196,7 @@ class ZemismartConfigFlow(ConfigFlow, domain=DOMAIN):
         self._host = host
         self._mac = state.mac
         self._name = state.model_name
-        self._ha_device_id = _find_matter_ha_device_id(self.hass)
+        self._ha_device_id = await _find_ha_device_id_for_ip(self.hass, host)
         self.context["title_placeholders"] = {"name": self._name, "host": host}
         return await self.async_step_confirm()
 
@@ -207,7 +254,11 @@ class ZemismartConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     await self.async_set_unique_id(mac)
                     self._abort_if_unique_id_configured(updates={CONF_HOST: host})
-                    ha_device_id = _find_matter_ha_device_id(self.hass)
+                    # Look up the correct Matter device for this specific IP.
+                    # Map IP → node_id via Matter server, then node_id → HA device_id.
+                    # This ensures each switch gets its own ha_device_id, even when
+                    # multiple ZM208s share the same manufacturer name.
+                    ha_device_id = await _find_ha_device_id_for_ip(self.hass, host)
                     return self.async_create_entry(
                         title=f"{state.model_name} — Display Labels",
                         data={
