@@ -1,17 +1,23 @@
 {
   "domain": "zemismart",
   "name": "Zemismart ZM208 Display Switch",
-  "version": "0.2.0",
-  "documentation": "https://github.com/martinbeyerlab/zemismart-hacs",
-  "issue_tracker": "https://github.com/martinbeyerlab/zemismart-hacs/issues",
-  "codeowners": ["@MartinBey"],
+  "version": "0.2.9",
+  "documentation": "https://github.com/martinbeyerlab/ha-zemismart",
+  "issue_tracker": "https://github.com/martinbeyerlab/ha-zemismart/issues",
+  "codeowners": [
+    "@MartinBey"
+  ],
   "requirements": [],
   "dependencies": [],
-  "after_dependencies": ["matter"],
+  "after_dependencies": [
+    "matter"
+  ],
   "iot_class": "local_polling",
   "integration_type": "device",
   "config_flow": true,
   "zeroconf": [
-    {"type": "_matterc._udp.local."}
+    {
+      "type": "_matterc._udp.local."
+    }
   ]
 }

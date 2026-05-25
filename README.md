@@ -41,7 +41,7 @@ Use these in automations to show context-aware labels — time of day, which roo
 ### Via HACS (Recommended)
 
 1. Open HACS → Integrations → ⋮ → Custom repositories
-2. Add `https://github.com/martinbeyerlab/zemismart-hacs` as type **Integration**
+2. Add `https://github.com/martinbeyerlab/ha-zemismart` as type **Integration**
 3. Install "Zemismart ZM208 Display Switch"
 4. Restart Home Assistant
 
