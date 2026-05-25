@@ -1,25 +1,25 @@
 {
   "config": {
     "step": {
+      "confirm": {
+        "title": "Add display labels to {name}",
+        "description": "Found Zemismart {name} at {host} (MAC: {mac}).\n\nThis will add writable display label entities for each button, controllable directly from the Home Assistant device page and automations."
+      },
       "user": {
-        "title": "Add Zemismart ZM208 Display Switch",
-        "description": "Enter the IP address of your ZM208 switch. The switch must be on the same local network as Home Assistant. Supports ZM208-1 through ZM208-4 (horizontal and vertical).",
+        "title": "Add ZM208 manually",
+        "description": "Auto-discovery did not find your ZM208. Enter its IP address manually (check your router's DHCP table or the Omada controller).",
         "data": {
           "host": "IP Address",
           "port": "UDP Port (default 3678)"
         }
-      },
-      "zeroconf_confirm": {
-        "title": "Zemismart ZM208 Found",
-        "description": "Found a Zemismart ZM208 display switch at {host} (MAC: {mac}). Add it to Home Assistant?"
       }
     },
     "error": {
-      "cannot_connect": "Cannot reach the device. Check the IP address and that the switch is on the same local network as Home Assistant.",
-      "unknown": "Unexpected error. Check the logs for details."
+      "cannot_connect": "Cannot reach the device on UDP port 3678. Ensure it is on the same local network as Home Assistant.",
+      "unknown": "Unexpected error communicating with the device. Check the logs."
     },
     "abort": {
-      "already_configured": "This ZM208 is already configured.",
+      "already_configured": "Display labels are already configured for this switch.",
       "cannot_connect": "Cannot connect to the device.",
       "not_zemismart": "Device is not a Zemismart ZM208.",
       "no_host": "Could not determine device IP address.",
