@@ -106,8 +106,16 @@ class ZemismartConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._ha_device_id:
             self._ha_device_id = _find_matter_ha_device_id(self.hass, self._node_id)
 
-        self.context["title_placeholders"] = {"name": self._name, "host": self._host}
-        return await self.async_step_confirm()
+        # Auto-create without asking — device is already trusted via Matter pairing
+        return self.async_create_entry(
+            title=f"{self._name} — Display Labels",
+            data={
+                CONF_HOST: self._host,
+                CONF_PORT: self._port,
+                "mac": self._mac,
+                "ha_device_id": self._ha_device_id,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Path 2: mDNS zeroconf — _matterc._udp.local. with VP=5020+
