@@ -69,12 +69,9 @@ class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
     @property
     def device_info(self) -> DeviceInfo:
         state = self.coordinator.data
+        # Use ONLY connections (MAC) — no identifiers — so HA merges these
+        # entities onto the existing Matter device rather than creating a new one.
         return DeviceInfo(
-            identifiers={(DOMAIN, state.mac)},
-            name=f"Zemismart {state.model_name}",
-            manufacturer="Zemismart",
-            model=state.model_name,
-            sw_version=state.firmware,
             connections={("mac", state.mac)},
         )
 
