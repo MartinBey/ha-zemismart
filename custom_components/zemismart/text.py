@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -69,11 +70,56 @@ async def async_setup_entry(
     device_info = _build_device_info(hass, entry, state)
     _LOGGER.debug("device_info for %s: %s", entry.title, device_info)
 
+    # Find the target device for our entities and fix any stale registry assignments.
+    # HA doesn't re-assign device_id from device_info when an entity already exists
+    # in the entity registry — we must update it explicitly here.
+    _fix_entity_device_assignments(hass, entry, state, device_info)
+
     entities = [
         ZM208LabelEntity(coordinator, entry, endpoint, device_info)
         for endpoint in state.endpoints
     ]
     async_add_entities(entities)
+
+
+def _fix_entity_device_assignments(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    state: ZM208State,
+    device_info: DeviceInfo,
+) -> None:
+    """Ensure entity registry entries point to the correct device.
+
+    HA caches device assignments in the entity registry and doesn't update them
+    automatically when device_info changes. This function explicitly updates any
+    stale assignments.
+    """
+    # Find the target device from device_info identifiers
+    target_device_id: str | None = None
+    idents = device_info.get("identifiers")
+    if idents:
+        dev_reg = dr.async_get(hass)
+        for device in dev_reg.devices.values():
+            dev_idents = set(map(tuple, device.identifiers or []))
+            if dev_idents & idents:
+                target_device_id = device.id
+                break
+
+    if not target_device_id:
+        return
+
+    ent_reg = er.async_get(hass)
+    for endpoint in state.endpoints:
+        unique_id = f"{state.mac}_label_{endpoint}"
+        entity_id = ent_reg.async_get_entity_id("text", DOMAIN, unique_id)
+        if entity_id:
+            entity_entry = ent_reg.async_get(entity_id)
+            if entity_entry and entity_entry.device_id != target_device_id:
+                _LOGGER.debug(
+                    "Reassigning %s from device %s to %s",
+                    entity_id, entity_entry.device_id, target_device_id,
+                )
+                ent_reg.async_update_entity(entity_id, device_id=target_device_id)
 
 
 class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
