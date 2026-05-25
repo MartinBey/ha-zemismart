@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import socket
 
 from homeassistant.config_entries import ConfigEntry
@@ -26,6 +27,10 @@ PLATFORMS = [Platform.TEXT]
 
 _ZEMISMART_MANUFACTURER = "Zemismart Technology Limited"
 
+# Pattern to extract node_id from Matter deviceid identifier
+# Format: deviceid_FABRICID-NODEID16HEX-MatterNodeDevice
+_DEVICEID_RE = re.compile(r"deviceid_[0-9A-Fa-f]+-([0-9A-Fa-f]{16})-", re.IGNORECASE)
+
 
 # ---------------------------------------------------------------------------
 # Integration-level setup — runs once, before any config entries
@@ -36,25 +41,53 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     @callback
     def _discover_after_start(_event=None) -> None:
-        # Run directly in the event loop — hass.data access is not thread-safe
-        for info in _scan_matter_devices(hass):
-            _LOGGER.debug("Auto-discovered Zemismart ZM208 at %s (MAC %s)", info["host"], info.get("mac"))
+        """Scan device registry for Zemismart ZM208s and fire discovery flows."""
+        already_configured = {
+            entry.data.get("ha_device_id")
+            for entry in hass.config_entries.async_entries(DOMAIN)
+            if entry.data.get("ha_device_id")
+        }
+
+        for info in _scan_zemismart_devices(hass):
+            if info["ha_device_id"] in already_configured:
+                _LOGGER.debug(
+                    "Zemismart %s already configured, skipping", info["name"]
+                )
+                continue
+            _LOGGER.info(
+                "Discovered Zemismart ZM208 at %s (MAC %s) — firing config flow",
+                info["host"], info.get("mac"),
+            )
             _fire_discovery_flow(hass, info)
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _discover_after_start)
 
     @callback
     def _on_device_registry_updated(event) -> None:
-        # HA 2026+: event is an Event object; use event.data to access payload
+        """Watch for newly added Zemismart devices and auto-configure them."""
+        # HA 2026+: event is an Event object; .data holds the payload
         data = event.data if hasattr(event, "data") else event
         if data.get("action") != "create":
             return
         dev_reg = dr.async_get(hass)
         device = dev_reg.async_get(data.get("device_id"))
-        if device and device.manufacturer == _ZEMISMART_MANUFACTURER:
-            info = _device_to_info(hass, device)
-            if info:
-                _fire_discovery_flow(hass, info)
+        if not device or device.manufacturer != _ZEMISMART_MANUFACTURER:
+            return
+
+        info = _device_to_discovery_info(hass, device)
+        if not info:
+            return
+
+        # Skip if already configured
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if entry.data.get("ha_device_id") == info["ha_device_id"]:
+                return
+
+        _LOGGER.info(
+            "New Zemismart ZM208 added via Matter: %s — firing config flow",
+            info["name"],
+        )
+        _fire_discovery_flow(hass, info)
 
     hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _on_device_registry_updated)
     return True
@@ -62,7 +95,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 @callback
 def _fire_discovery_flow(hass: HomeAssistant, info: dict) -> None:
-    from homeassistant.config_entries import SOURCE_INTEGRATION_DISCOVERY
+    from homeassistant.config_entries import SOURCE_INTEGRATION_DISCOVERY  # noqa: PLC0415
     async_create_flow(
         hass,
         DOMAIN,
@@ -96,95 +129,122 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Discovery helpers — all run in the event loop (NOT in executor threads)
+# Discovery helpers — run in the event loop (NOT in executor threads)
 # ---------------------------------------------------------------------------
 
-def _scan_matter_devices(hass: HomeAssistant) -> list[dict]:
-    """Find all Zemismart ZM208 devices via the Matter integration's node cache."""
+def _scan_zemismart_devices(hass: HomeAssistant) -> list[dict]:
+    """Find all Zemismart ZM208 devices in the HA device registry.
+
+    Uses the device registry directly (not Matter client internals), so this
+    works reliably regardless of how the Matter integration stores its data.
+    For each Zemismart Matter device, extracts the node_id from its identifier
+    and fetches the IP from the Matter node's cached attributes.
+    """
     results = []
-    try:
-        from homeassistant.components.matter import DOMAIN as MATTER_DOMAIN  # noqa: PLC0415
-    except ImportError:
-        _LOGGER.debug("Matter integration not available")
-        return results
+    dev_reg = dr.async_get(hass)
 
-    for entry in hass.config_entries.async_entries(MATTER_DOMAIN):
-        adapter = hass.data.get(MATTER_DOMAIN, {}).get(entry.entry_id)
-        if not adapter:
+    for device in dev_reg.devices.values():
+        if device.manufacturer != _ZEMISMART_MANUFACTURER:
+            continue
+        # Must have a Matter deviceid identifier (not just any Zemismart device)
+        node_id = _node_id_from_device(device)
+        if node_id is None:
             continue
 
-        try:
-            nodes = list(adapter.matter_client.get_nodes())
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Could not read Matter nodes: %s", err)
-            continue
-
-        for node in nodes:
-            info = _node_to_info(hass, node)
-            if info:
-                results.append(info)
+        info = _device_to_discovery_info(hass, device)
+        if info:
+            results.append(info)
 
     if not results:
-        _LOGGER.debug(
-            "No Zemismart ZM208 devices found in Matter. "
-            "Make sure the ZM208 is paired via Matter and HA has fully started."
+        _LOGGER.info(
+            "No Zemismart ZM208 devices found in HA (manufacturer=%r). "
+            "Pair the ZM208 via Matter first, then restart HA.",
+            _ZEMISMART_MANUFACTURER,
         )
+    else:
+        _LOGGER.info("Found %d Zemismart ZM208 device(s): %s",
+                     len(results), [r["name"] for r in results])
     return results
 
 
-def _node_to_info(hass: HomeAssistant, node) -> dict | None:
-    """Extract host/MAC/name from a Matter node if it is a Zemismart ZM208."""
-    attrs = getattr(node, "attributes", {})
-
-    vendor_id = attrs.get("0/40/2")       # VendorID (int)
-    vendor_name = str(attrs.get("0/40/1", ""))
-
-    if vendor_id != 5020 and _ZEMISMART_MANUFACTURER not in vendor_name:
+def _device_to_discovery_info(hass: HomeAssistant, device) -> dict | None:
+    """Build discovery info dict for a Zemismart device from the device registry."""
+    node_id = _node_id_from_device(device)
+    if node_id is None:
         return None
 
-    # IPv4 from General Diagnostics (cluster 51, attr 0), field "5" = IPv4 list (base64)
-    ip = _extract_ipv4(attrs.get("0/51/0", []))
+    ip = _ip_for_node(hass, node_id)
     if not ip:
-        _LOGGER.debug("Zemismart node %s has no IPv4 address yet", getattr(node, "node_id", "?"))
+        _LOGGER.debug(
+            "Could not get IP for Zemismart device '%s' (node %s) — "
+            "Matter network diagnostics not yet available",
+            device.name, node_id,
+        )
         return None
 
-    mac, name = _mac_and_name_for_node(hass, node)
-    product = attrs.get("0/40/3", "ZM208") or "ZM208"
-    node_id = getattr(node, "node_id", None)
-    ha_device_id = _find_matter_ha_device_id_for_node(hass, node_id)
+    mac = next((c[1] for c in (device.connections or []) if c[0] == "mac"), "")
+    name = device.name_by_user or device.name or "ZM208"
 
     return {
         "host": ip,
         "mac": mac,
-        "name": name or product,
+        "name": name,
         "node_id": node_id,
-        "ha_device_id": ha_device_id,
+        "ha_device_id": device.id,
     }
 
 
-def _device_to_info(hass: HomeAssistant, device) -> dict | None:
-    """Get discovery info for a newly added device-registry entry."""
+def _node_id_from_device(device) -> int | None:
+    """Extract Matter node_id from a device's identifiers.
+
+    Identifier format: ['matter', 'deviceid_FABRICID-NODEID16HEX-MatterNodeDevice']
+    """
+    for ident in (device.identifiers or []):
+        if ident[0] == "matter" and "deviceid" in ident[1]:
+            m = _DEVICEID_RE.search(ident[1])
+            if m:
+                try:
+                    return int(m.group(1), 16)
+                except ValueError:
+                    pass
+    return None
+
+
+def _ip_for_node(hass: HomeAssistant, node_id: int) -> str | None:
+    """Get IPv4 address for a Matter node from the cached node attributes."""
     try:
         from homeassistant.components.matter import DOMAIN as MATTER_DOMAIN  # noqa: PLC0415
+
         for entry in hass.config_entries.async_entries(MATTER_DOMAIN):
             adapter = hass.data.get(MATTER_DOMAIN, {}).get(entry.entry_id)
             if not adapter:
                 continue
-            # Find the node whose device registry entry matches this device
-            for node in adapter.matter_client.get_nodes():
-                _, _ = _mac_and_name_for_node(hass, node)  # side-effect: check identifiers
-                info = _node_to_info(hass, node)
-                if info and info.get("mac"):
-                    # Verify this node belongs to the new device
-                    dev_reg = dr.async_get(hass)
-                    for d in dev_reg.devices.values():
-                        if d.id == device.id and any(
-                            c[0] == "mac" and c[1].lower() == info["mac"].lower()
-                            for c in d.connections
-                        ):
-                            return info
+
+            # Try get_node(node_id) first — most direct and efficient
+            node = None
+            try:
+                node = adapter.matter_client.get_node(node_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+            # Fall back to scanning all nodes
+            if node is None:
+                try:
+                    for n in adapter.matter_client.get_nodes():
+                        if getattr(n, "node_id", None) == node_id:
+                            node = n
+                            break
+                except Exception:  # noqa: BLE001
+                    pass
+
+            if node:
+                ip = _extract_ipv4(getattr(node, "attributes", {}).get("0/51/0", []))
+                if ip:
+                    _LOGGER.debug("Got IP %s for Matter node %s", ip, node_id)
+                    return ip
+
     except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("Error in _device_to_info: %s", err)
+        _LOGGER.debug("Error getting IP for Matter node %s: %s", node_id, err)
     return None
 
 
@@ -198,40 +258,14 @@ def _extract_ipv4(iface_list: list) -> str | None:
     return None
 
 
-def _mac_and_name_for_node(hass: HomeAssistant, node) -> tuple[str, str]:
-    try:
-        from homeassistant.components.matter import DOMAIN as MATTER_DOMAIN  # noqa: PLC0415
-        dev_reg = dr.async_get(hass)
-        node_id = getattr(node, "node_id", None)
-        for device in dev_reg.devices.values():
-            if any(
-                ident[0] == MATTER_DOMAIN and str(node_id) in str(ident[1])
-                for ident in device.identifiers
-            ):
-                mac = next((c[1] for c in device.connections if c[0] == "mac"), "")
-                return mac, device.name or ""
-    except Exception:  # noqa: BLE001
-        pass
-    return "", ""
-
-
 def _find_matter_ha_device_id_for_node(hass: HomeAssistant, node_id: int | None) -> str | None:
-    """Return the HA device registry UUID for the Matter node with this node_id."""
+    """Return the HA device registry UUID for a Matter node (used in _node_to_info)."""
     if node_id is None:
         return None
-    try:
-        from homeassistant.components.matter import DOMAIN as MATTER_DOMAIN  # noqa: PLC0415
-        node_id_hex = format(node_id, "016X")
-        dev_reg = dr.async_get(hass)
-        for device in dev_reg.devices.values():
-            for ident in (device.identifiers or []):
-                if ident[0] == MATTER_DOMAIN and node_id_hex in ident[1].upper():
-                    return device.id
-        # Fallback: match by Zemismart manufacturer
-        for device in dev_reg.devices.values():
-            if device.manufacturer == "Zemismart Technology Limited":
-                if any(i[0] == MATTER_DOMAIN and "deviceid" in i[1] for i in (device.identifiers or [])):
-                    return device.id
-    except Exception:  # noqa: BLE001
-        pass
+    dev_reg = dr.async_get(hass)
+    node_id_hex = format(node_id, "016X")
+    for device in dev_reg.devices.values():
+        for ident in (device.identifiers or []):
+            if ident[0] == "matter" and node_id_hex in ident[1].upper():
+                return device.id
     return None
