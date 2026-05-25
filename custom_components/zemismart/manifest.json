@@ -9,10 +9,10 @@
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/martinbeyerlab/ha-zemismart",
+  "documentation": "https://github.com/MartinBey/ha-zemismart",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/martinbeyerlab/ha-zemismart/issues",
+  "issue_tracker": "https://github.com/MartinBey/ha-zemismart/issues",
   "requirements": [],
   "version": "0.3.2",
   "zeroconf": [
