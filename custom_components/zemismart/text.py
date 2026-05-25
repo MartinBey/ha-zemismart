@@ -7,6 +7,7 @@ from homeassistant.components.text import TextEntity, TextMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -17,7 +18,6 @@ from .protocol import ZM208Client
 
 _LOGGER = logging.getLogger(__name__)
 
-# Physical display character limit on ZM208 series
 DISPLAY_MAX_CHARS = 10
 
 
@@ -28,9 +28,6 @@ async def async_setup_entry(
 ) -> None:
     coordinator: ZM208Coordinator = hass.data[DOMAIN][entry.entry_id]
     state = coordinator.data
-
-    # Create one text entity per button endpoint.
-    # Gang count is auto-detected: ZM208-1 has ep[1], ZM208-4 has ep[1,2,3,4].
     entities = [
         ZM208LabelEntity(coordinator, entry, endpoint)
         for endpoint in state.endpoints
@@ -39,14 +36,10 @@ async def async_setup_entry(
 
 
 class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
-    """A writable text entity representing one button's display label.
+    """A writable text entity for one button's display label.
 
-    One entity is created per button on the switch:
-      - ZM208-1: 1 entity
-      - ZM208-2: 2 entities
-      - ZM208-3: 3 entities
-      - ZM208-4: 4 entities
-    The entity name reflects the button number (1-based, matching the physical switch).
+    Attaches to the existing Matter device by using its own identifiers,
+    so the label fields appear on the same HA device card as the switches.
     """
 
     _attr_mode = TextMode.TEXT
@@ -68,11 +61,28 @@ class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
+        """Return device info that attaches these entities to the Matter device.
+
+        We look up the stored ha_device_id (the HA device registry UUID of the
+        existing Matter device) and return its own identifiers. HA uses the
+        identifiers to find the existing device and adds our entities to it,
+        so the label fields appear on the same device card as the Matter switches.
+        """
+        ha_device_id = self._entry.data.get("ha_device_id")
+        if ha_device_id:
+            dev_reg = dr.async_get(self.hass)
+            device = dev_reg.async_get(ha_device_id)
+            if device and device.identifiers:
+                return DeviceInfo(identifiers=set(map(tuple, device.identifiers)))
+
+        # Fallback: standalone device (used when Matter device not found)
         state = self.coordinator.data
-        # Use ONLY connections (MAC) — no identifiers — so HA merges these
-        # entities onto the existing Matter device rather than creating a new one.
         return DeviceInfo(
             connections={("mac", state.mac)},
+            name=f"Zemismart {state.model_name}",
+            manufacturer="Zemismart",
+            model=state.model_name,
+            sw_version=state.firmware,
         )
 
     @property
@@ -80,7 +90,6 @@ class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
         return self.coordinator.data.labels.get(self._endpoint)
 
     async def async_set_value(self, value: str) -> None:
-        """Write a new label to this button's display."""
         client = ZM208Client(
             self._entry.data[CONF_HOST],
             self._entry.data.get(CONF_PORT, PORT),
@@ -88,5 +97,4 @@ class ZM208LabelEntity(CoordinatorEntity[ZM208Coordinator], TextEntity):
         new_state = await self.hass.async_add_executor_job(
             client.set_label, self._endpoint, value
         )
-        # Push the fresh state directly to the coordinator so all entities update
         self.coordinator.async_set_updated_data(new_state)

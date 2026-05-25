@@ -148,12 +148,15 @@ def _node_to_info(hass: HomeAssistant, node) -> dict | None:
 
     mac, name = _mac_and_name_for_node(hass, node)
     product = attrs.get("0/40/3", "ZM208") or "ZM208"
+    node_id = getattr(node, "node_id", None)
+    ha_device_id = _find_matter_ha_device_id_for_node(hass, node_id)
 
     return {
         "host": ip,
         "mac": mac,
         "name": name or product,
-        "node_id": getattr(node, "node_id", None),
+        "node_id": node_id,
+        "ha_device_id": ha_device_id,
     }
 
 
@@ -208,3 +211,25 @@ def _mac_and_name_for_node(hass: HomeAssistant, node) -> tuple[str, str]:
     except Exception:  # noqa: BLE001
         pass
     return "", ""
+
+
+def _find_matter_ha_device_id_for_node(hass: HomeAssistant, node_id: int | None) -> str | None:
+    """Return the HA device registry UUID for the Matter node with this node_id."""
+    if node_id is None:
+        return None
+    try:
+        from homeassistant.components.matter import DOMAIN as MATTER_DOMAIN  # noqa: PLC0415
+        node_id_hex = format(node_id, "016X")
+        dev_reg = dr.async_get(hass)
+        for device in dev_reg.devices.values():
+            for ident in (device.identifiers or []):
+                if ident[0] == MATTER_DOMAIN and node_id_hex in ident[1].upper():
+                    return device.id
+        # Fallback: match by Zemismart manufacturer
+        for device in dev_reg.devices.values():
+            if device.manufacturer == "Zemismart Technology Limited":
+                if any(i[0] == MATTER_DOMAIN and "deviceid" in i[1] for i in (device.identifiers or [])):
+                    return device.id
+    except Exception:  # noqa: BLE001
+        pass
+    return None
